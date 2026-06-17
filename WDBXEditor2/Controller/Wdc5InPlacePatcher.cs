@@ -237,8 +237,8 @@ namespace WDBXEditor2.Controller
                     throw new InvalidOperationException($"Expected WDC5 storage, got {storage.FormatIdentifier}.");
 
                 var columnNames = storage.AvailableColumns;
-                int expectedColumns = columnNames.Length - (Flags.HasFlag(DB2Flags.Index) ? 1 : 0);
-                if (expectedColumns != Columns.Count)
+                int availableRecordFields = columnNames.Length - (Flags.HasFlag(DB2Flags.Index) ? 1 : 0);
+                if (availableRecordFields < Columns.Count)
                     throw new InvalidOperationException(
                         $"DBD field count does not match WDC5 column count. DBD fields: {columnNames.Length}, WDC5 columns: {Columns.Count}, IdFieldIndex: {IdFieldIndex}, Flags: {Flags}."
                     );
@@ -249,9 +249,17 @@ namespace WDBXEditor2.Controller
                     if (i == IdFieldIndex && Flags.HasFlag(DB2Flags.Index))
                         continue;
 
+                    if (columnIndex >= Columns.Count)
+                        break;
+
                     Columns[columnIndex].Name = columnNames[i];
                     columnIndex++;
                 }
+
+                if (columnIndex != Columns.Count)
+                    throw new InvalidOperationException(
+                        $"Unable to map DBD fields to WDC5 columns. Mapped: {columnIndex}, WDC5 columns: {Columns.Count}."
+                    );
             }
 
             public bool TryGetRecordOffset(int id, out int recordOffset) => editableRecordOffsets.TryGetValue(id, out recordOffset);
