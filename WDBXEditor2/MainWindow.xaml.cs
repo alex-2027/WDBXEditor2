@@ -28,8 +28,7 @@ namespace WDBXEditor2
         private const int PageSize = 5000;
         private static readonly HashSet<string> ReadOnlyClientFormats = new HashSet<string>(StringComparer.Ordinal)
         {
-            "WDC4",
-            "WDC5"
+            "WDC4"
         };
 
         public MainWindow()
@@ -290,7 +289,17 @@ namespace WDBXEditor2
 
             try
             {
-                SafeSaveStorage(storage, targetFile);
+                if (storage.FormatIdentifier == "WDC5" &&
+                    dbLoader.LoadedDBFilePaths.TryGetValue(currentOpenDB2, out string sourceFile) &&
+                    File.Exists(sourceFile))
+                {
+                    Wdc5InPlacePatcher.Save(storage, sourceFile, targetFile);
+                }
+                else
+                {
+                    SafeSaveStorage(storage, targetFile);
+                }
+
                 MessageBox.Show(
                     $"Saved {Path.GetFileName(targetFile)}.\nA backup was created next to the target file.",
                     "WDBXEditor2",
