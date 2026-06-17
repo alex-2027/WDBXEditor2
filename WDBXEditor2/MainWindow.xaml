@@ -59,8 +59,18 @@
                             <RowDefinition />
                             <RowDefinition Height="20"/>
                         </Grid.RowDefinitions>
-                        <GroupBox Grid.Row="0" Header="Filter" Margin="0,-10,0,5">
-
+                        <GroupBox Grid.Row="0" Header="Rows" Margin="0,-10,0,5">
+                            <Grid Margin="8,4,8,4">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock x:Name="PageInfoText" Grid.Row="0" Text="No DB2 loaded" Margin="0,0,0,8"/>
+                                <StackPanel Grid.Row="1" Orientation="Horizontal">
+                                    <Button x:Name="PreviousPageButton" Content="Previous" Width="80" Height="24" Click="PreviousPage_Click" IsEnabled="False"/>
+                                    <Button x:Name="NextPageButton" Content="Next" Width="80" Height="24" Margin="8,0,0,0" Click="NextPage_Click" IsEnabled="False"/>
+                                </StackPanel>
+                            </Grid>
                         </GroupBox>
                         <ProgressBar x:Name="ProgressBar" Grid.Row="1" Value="0" />
                     </Grid>

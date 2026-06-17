@@ -23,7 +23,8 @@ namespace WDBXEditor2
         private string currentOpenDB2 = string.Empty;
         private IDBCDStorage openedDB2Storage;
         private List<DBCDRow> currentGridRows = new List<DBCDRow>();
-        private const int MaxPreviewRows = 5000;
+        private int currentPageIndex = 0;
+        private const int PageSize = 5000;
 
         public MainWindow()
         {
@@ -59,6 +60,8 @@ namespace WDBXEditor2
             DB2DataGrid.Columns.Clear();
             DB2DataGrid.ItemsSource = new List<string>();
             currentGridRows = new List<DBCDRow>();
+            currentPageIndex = 0;
+            UpdatePagingControls();
 
             currentOpenDB2 = (string)OpenDBItems.SelectedItem;
             if (currentOpenDB2 == null)
@@ -66,55 +69,65 @@ namespace WDBXEditor2
 
             if (dbLoader.LoadedDBFiles.TryGetValue(currentOpenDB2, out IDBCDStorage storage))
             {
-                var stopWatch = new Stopwatch();
-                stopWatch.Start();
-
-                ProgressBar.IsIndeterminate = true;
-                DB2DataGrid.IsEnabled = false;
-                Title = $"WDBXEditor2  -  {Constants.Version}  -  Loading {currentOpenDB2}...";
-
-                try
-                {
-                    var selectedDB2 = currentOpenDB2;
-                    var result = await Task.Run(() => BuildPreviewData(storage));
-
-                    if (selectedDB2 != currentOpenDB2)
-                        return;
-
-                    stopWatch.Stop();
-                    Console.WriteLine($"Populating Grid: {currentOpenDB2} Elapsed Time: {stopWatch.Elapsed}");
-
-                    openedDB2Storage = storage;
-                    currentGridRows = result.Rows;
-                    DB2DataGrid.ItemsSource = result.Table.DefaultView;
-
-                    var previewSuffix = storage.Values.Count > result.Rows.Count
-                        ? $"  -  showing {result.Rows.Count:N0} of {storage.Values.Count:N0} rows"
-                        : $"  -  {result.Rows.Count:N0} rows";
-                    Title = $"WDBXEditor2  -  {Constants.Version}  -  {currentOpenDB2}{previewSuffix}";
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine(ex);
-                    MessageBox.Show(
-                        string.Format("Cant display {0}.\n{1}", currentOpenDB2, ex.Message),
-                        "WDBXEditor2",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning
-                    );
-                }
-                finally
-                {
-                    ProgressBar.IsIndeterminate = false;
-                    DB2DataGrid.IsEnabled = true;
-                }
+                openedDB2Storage = storage;
+                await LoadCurrentPage();
             }
         }
 
-        private static (DataTable Table, List<DBCDRow> Rows) BuildPreviewData(IDBCDStorage storage)
+        private async Task LoadCurrentPage()
+        {
+            if (openedDB2Storage == null)
+                return;
+
+            var stopWatch = Stopwatch.StartNew();
+
+            ProgressBar.IsIndeterminate = true;
+            DB2DataGrid.IsEnabled = false;
+            PreviousPageButton.IsEnabled = false;
+            NextPageButton.IsEnabled = false;
+            Title = $"WDBXEditor2  -  {Constants.Version}  -  Loading {currentOpenDB2}...";
+
+            try
+            {
+                var selectedDB2 = currentOpenDB2;
+                var pageIndex = currentPageIndex;
+                var result = await Task.Run(() => BuildPageData(openedDB2Storage, pageIndex));
+
+                if (selectedDB2 != currentOpenDB2 || pageIndex != currentPageIndex)
+                    return;
+
+                stopWatch.Stop();
+                Console.WriteLine($"Populating Grid: {currentOpenDB2} page {currentPageIndex + 1} Elapsed Time: {stopWatch.Elapsed}");
+
+                currentGridRows = result.Rows;
+                DB2DataGrid.ItemsSource = result.Table.DefaultView;
+                UpdatePagingControls();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+                MessageBox.Show(
+                    string.Format("Cant display {0}.\n{1}", currentOpenDB2, ex.Message),
+                    "WDBXEditor2",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning
+                );
+            }
+            finally
+            {
+                ProgressBar.IsIndeterminate = false;
+                DB2DataGrid.IsEnabled = true;
+                UpdatePagingControls();
+            }
+        }
+
+        private static (DataTable Table, List<DBCDRow> Rows) BuildPageData(IDBCDStorage storage, int pageIndex)
         {
             var data = new DataTable();
-            var rows = storage.Values.Take(MaxPreviewRows).ToList();
+            var rows = storage.Values
+                .Skip(pageIndex * PageSize)
+                .Take(PageSize)
+                .ToList();
 
             if (rows.Count > 0)
             {
@@ -123,6 +136,27 @@ namespace WDBXEditor2
             }
 
             return (data, rows);
+        }
+
+        private void UpdatePagingControls()
+        {
+            if (openedDB2Storage == null)
+            {
+                PageInfoText.Text = "No DB2 loaded";
+                PreviousPageButton.IsEnabled = false;
+                NextPageButton.IsEnabled = false;
+                return;
+            }
+
+            int totalRows = openedDB2Storage.Values.Count;
+            int totalPages = Math.Max(1, (int)Math.Ceiling(totalRows / (double)PageSize));
+            int firstRow = totalRows == 0 ? 0 : currentPageIndex * PageSize + 1;
+            int lastRow = Math.Min(totalRows, (currentPageIndex + 1) * PageSize);
+
+            PageInfoText.Text = $"Page {currentPageIndex + 1:N0} / {totalPages:N0}  Rows {firstRow:N0}-{lastRow:N0} of {totalRows:N0}";
+            PreviousPageButton.IsEnabled = currentPageIndex > 0;
+            NextPageButton.IsEnabled = currentPageIndex < totalPages - 1;
+            Title = $"WDBXEditor2  -  {Constants.Version}  -  {currentOpenDB2}  -  {PageInfoText.Text}";
         }
 
         /// <summary>
@@ -187,6 +221,9 @@ namespace WDBXEditor2
 
             currentOpenDB2 = string.Empty;
             openedDB2Storage = null;
+            currentGridRows = new List<DBCDRow>();
+            currentPageIndex = 0;
+            UpdatePagingControls();
         }
 
         private void Save_Click(object sender, RoutedEventArgs e)
@@ -216,6 +253,28 @@ namespace WDBXEditor2
         private void Exit_Click(object sender, RoutedEventArgs e)
         {
             Application.Current.Shutdown();
+        }
+
+        private async void PreviousPage_Click(object sender, RoutedEventArgs e)
+        {
+            if (openedDB2Storage == null || currentPageIndex <= 0)
+                return;
+
+            currentPageIndex--;
+            await LoadCurrentPage();
+        }
+
+        private async void NextPage_Click(object sender, RoutedEventArgs e)
+        {
+            if (openedDB2Storage == null)
+                return;
+
+            int totalPages = Math.Max(1, (int)Math.Ceiling(openedDB2Storage.Values.Count / (double)PageSize));
+            if (currentPageIndex >= totalPages - 1)
+                return;
+
+            currentPageIndex++;
+            await LoadCurrentPage();
         }
 
         private void DB2DataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
