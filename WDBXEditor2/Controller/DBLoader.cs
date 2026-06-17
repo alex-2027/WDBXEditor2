@@ -61,7 +61,7 @@ namespace WDBXEditor2.Controller
                 catch (AggregateException)
                 {
                     MessageBox.Show(
-                        string.Format("Cant find defenitions for {0}.\nCheck your Filename and note upper and lower case", db2Name),
+                        string.Format("Can't find definitions for {0}.\nCheck your filename, network access, or cached DBD files.", db2Name),
                         "WDBXEditor2",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning
