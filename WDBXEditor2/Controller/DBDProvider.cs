@@ -13,6 +13,7 @@ namespace WDBXEditor2.Controller
         private static Uri BaseURI = new Uri("https://raw.githubusercontent.com/wowdev/WoWDBDefs/master/definitions/");
         private static Uri GitHubDefinitionsApi = new Uri("https://api.github.com/repos/wowdev/WoWDBDefs/contents/definitions?ref=master");
         private static string CachePath = Path.Combine(AppContext.BaseDirectory, "Cache");
+        private static string DefinitionsPath = Path.Combine(AppContext.BaseDirectory, "definitions");
         private static string ManifestCachePath = Path.Combine(CachePath, "definitions-manifest.json");
         private static TimeSpan CacheRefreshTime = TimeSpan.FromHours(24);
         private static TimeSpan NetworkTimeout = TimeSpan.FromSeconds(10);
@@ -23,6 +24,8 @@ namespace WDBXEditor2.Controller
         {
             if (!Directory.Exists(CachePath))
                 Directory.CreateDirectory(CachePath);
+            if (!Directory.Exists(DefinitionsPath))
+                Directory.CreateDirectory(DefinitionsPath);
 
             client.BaseAddress = BaseURI;
             client.Timeout = NetworkTimeout;
@@ -33,20 +36,20 @@ namespace WDBXEditor2.Controller
         {
             foreach (string dbdName in GetDbdNameCandidates(tableName))
             {
-                string cacheFile = Path.Combine(CachePath, dbdName);
+                string definitionFile = Path.Combine(DefinitionsPath, dbdName);
 
-                if (File.Exists(cacheFile))
+                if (File.Exists(definitionFile))
                 {
-                    if (DateTime.Now - File.GetLastWriteTime(cacheFile) > CacheRefreshTime)
-                        TryRefreshCachedFile(dbdName, cacheFile);
+                    if (DateTime.Now - File.GetLastWriteTime(definitionFile) > CacheRefreshTime)
+                        TryRefreshCachedFile(dbdName, definitionFile);
 
-                    return new MemoryStream(File.ReadAllBytes(cacheFile));
+                    return new MemoryStream(File.ReadAllBytes(definitionFile));
                 }
 
                 try
                 {
                     var bytes = DownloadBytes(dbdName);
-                    File.WriteAllBytes(cacheFile, bytes);
+                    File.WriteAllBytes(definitionFile, bytes);
                     return new MemoryStream(bytes);
                 }
                 catch
@@ -55,19 +58,19 @@ namespace WDBXEditor2.Controller
                 }
             }
 
-            throw new FileNotFoundException($"Unable to find definitions for '{Path.GetFileName(tableName)}'. Check GitHub/network access, or place the matching .dbd file in '{CachePath}'.");
+            throw new FileNotFoundException($"Unable to find definitions for '{Path.GetFileName(tableName)}'. Check GitHub/network access, or place the matching .dbd file in '{DefinitionsPath}'.");
         }
 
         private IEnumerable<string> GetDbdNameCandidates(string tableName)
         {
             string requestedName = Path.GetFileNameWithoutExtension(tableName) + ".dbd";
-            string cachedName = Directory
-                .EnumerateFiles(CachePath, "*.dbd")
+            string localName = Directory
+                .EnumerateFiles(DefinitionsPath, "*.dbd")
                 .Select(Path.GetFileName)
                 .FirstOrDefault(name => string.Equals(name, requestedName, StringComparison.OrdinalIgnoreCase));
 
-            if (!string.IsNullOrEmpty(cachedName))
-                yield return cachedName;
+            if (!string.IsNullOrEmpty(localName))
+                yield return localName;
 
             Dictionary<string, string> manifest = null;
             try
