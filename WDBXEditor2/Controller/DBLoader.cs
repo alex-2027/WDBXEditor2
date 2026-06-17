@@ -70,7 +70,7 @@ namespace WDBXEditor2.Controller
                 catch (AggregateException)
                 {
                     MessageBox.Show(
-                        string.Format("Can't find definitions for {0}.\nCheck your filename, network access, or cached DBD files.", db2Name),
+                        string.Format("找不到 {0} 的 definitions。\n请检查文件名、网络连接，或程序目录 definitions 下的 DBD 文件。", db2Name),
                         "WDBXEditor2",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning
@@ -80,7 +80,7 @@ namespace WDBXEditor2.Controller
                 {
                     Console.WriteLine(ex);
                     MessageBox.Show(
-                        string.Format("Cant load {0}.\n{1}", db2Name, ex.Message),
+                        string.Format("无法加载 {0}。\n{1}", db2Name, ex.Message),
                         "WDBXEditor2",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning

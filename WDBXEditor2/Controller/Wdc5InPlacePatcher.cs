@@ -1,9 +1,11 @@
 using DBCD;
 using DBCD.IO;
+using DBCD.IO.Attributes;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 
 namespace WDBXEditor2.Controller
 {
@@ -32,7 +34,7 @@ namespace WDBXEditor2.Controller
             }
 
             if (patchedRows == 0)
-                throw new InvalidOperationException("No editable WDC5 rows were found in the unencrypted section.");
+                throw new InvalidOperationException("未在未加密 section 中找到可编辑的 WDC5 行。");
 
             SafeReplace(targetFile, patched);
         }
@@ -40,22 +42,39 @@ namespace WDBXEditor2.Controller
         private static void WriteRow(byte[] data, int recordOffset, DBCDRow row, Wdc5Layout layout)
         {
             var recordBits = new byte[layout.RecordSize];
+            Buffer.BlockCopy(data, recordOffset, recordBits, 0, layout.RecordSize);
 
             for (int i = 0; i < layout.Columns.Count; i++)
             {
                 var column = layout.Columns[i];
                 object value = row[column.Name];
-                uint rawValue = Convert.ToUInt32(value);
+                uint rawValue = ToRawUInt32(value);
 
                 if (!column.PalletIndexByValue.TryGetValue(rawValue, out uint palletIndex))
                     throw new InvalidOperationException(
-                        $"Row {row.ID} column {column.Name} value {rawValue} is not present in the original WDC5 pallet data."
+                        $"第 {row.ID} 行字段 {column.Name} 的值 {rawValue} 不存在于原始 WDC5 pallet 数据中。"
                     );
 
                 WriteBits(recordBits, column.BitOffset, column.BitWidth, palletIndex);
             }
 
             Buffer.BlockCopy(recordBits, 0, data, recordOffset, layout.RecordSize);
+        }
+
+        private static uint ToRawUInt32(object value)
+        {
+            return value switch
+            {
+                byte typedValue => typedValue,
+                sbyte typedValue => unchecked((uint)typedValue),
+                short typedValue => unchecked((uint)typedValue),
+                ushort typedValue => typedValue,
+                int typedValue => unchecked((uint)typedValue),
+                uint typedValue => typedValue,
+                long typedValue => unchecked((uint)typedValue),
+                ulong typedValue => unchecked((uint)typedValue),
+                _ => Convert.ToUInt32(value)
+            };
         }
 
         private static void SafeReplace(string targetFile, byte[] data)
@@ -122,7 +141,10 @@ namespace WDBXEditor2.Controller
 
                 string magic = new string(reader.ReadChars(4));
                 if (magic != "WDC5")
-                    throw new InvalidDataException($"Expected WDC5, got {magic}.");
+                    throw new InvalidDataException($"需要 WDC5 文件，但实际是 {magic}。");
+
+                if (data.Length < HeaderSize)
+                    throw new InvalidDataException("WDC5 文件长度小于 header。");
 
                 stream.Position = 136;
                 int recordsCount = reader.ReadInt32();
@@ -145,17 +167,22 @@ namespace WDBXEditor2.Controller
                 int sectionsCount = reader.ReadInt32();
 
                 if (recordsCount <= 0 || fieldsCount <= 0 || totalFieldCount != fieldsCount)
-                    throw new InvalidDataException("Unsupported WDC5 header.");
+                    throw new InvalidDataException("不支持的 WDC5 header。");
 
                 if (flags != DB2Flags.Index)
-                    throw new InvalidDataException($"Only indexed non-sparse WDC5 files are supported for safe patching. Flags: {flags}.");
+                    throw new InvalidDataException($"安全 patch 目前只支持 indexed non-sparse WDC5 文件。Flags: {flags}。");
 
                 if (lookupColumnCount != 1 || commonDataSize != 0 || columnMetaDataSize != fieldsCount * ColumnMetaSize)
-                    throw new InvalidDataException("Unsupported WDC5 lookup or column metadata layout.");
+                    throw new InvalidDataException("不支持的 WDC5 lookup 或 column metadata 布局。");
+
+                if (sectionsCount <= 0)
+                    throw new InvalidDataException("WDC5 文件没有 section。");
 
                 var sections = new List<Wdc5Section>();
                 for (int i = 0; i < sectionsCount; i++)
                 {
+                    EnsureAvailable(data, stream.Position, SectionHeaderSize, "WDC5 section headers");
+
                     sections.Add(new Wdc5Section
                     {
                         TactKeyLookup = reader.ReadUInt64(),
@@ -176,6 +203,8 @@ namespace WDBXEditor2.Controller
                 var columns = new List<Wdc5Column>();
                 for (int i = 0; i < fieldsCount; i++)
                 {
+                    EnsureAvailable(data, stream.Position, ColumnMetaSize, "WDC5 column metadata");
+
                     ushort recordOffset = reader.ReadUInt16();
                     ushort size = reader.ReadUInt16();
                     uint additionalDataSize = reader.ReadUInt32();
@@ -185,10 +214,10 @@ namespace WDBXEditor2.Controller
                     reader.ReadInt32(); // cardinality
 
                     if (compressionType != 3)
-                        throw new InvalidDataException("Only pallet-compressed WDC5 columns are supported for safe patching.");
+                        throw new InvalidDataException("安全 patch 目前只支持 pallet 压缩的 WDC5 字段。");
 
                     if (recordOffset != bitOffset || size != bitWidth)
-                        throw new InvalidDataException("Unsupported WDC5 pallet bit layout.");
+                        throw new InvalidDataException("不支持的 WDC5 pallet bit 布局。");
 
                     columns.Add(new Wdc5Column
                     {
@@ -202,6 +231,11 @@ namespace WDBXEditor2.Controller
                 foreach (var column in columns)
                 {
                     int valueCount = column.AdditionalDataSize / 4;
+                    if (column.AdditionalDataSize % 4 != 0)
+                        throw new InvalidDataException("WDC5 pallet 数据大小异常。");
+
+                    EnsureAvailable(data, stream.Position, column.AdditionalDataSize, "WDC5 pallet data");
+
                     for (uint i = 0; i < valueCount; i++)
                     {
                         uint value = reader.ReadUInt32();
@@ -210,7 +244,7 @@ namespace WDBXEditor2.Controller
                 }
 
                 if (stream.Position != HeaderSize + sectionsCount * SectionHeaderSize + fieldsCount * 4 + columnMetaDataSize + palletDataSize)
-                    throw new InvalidDataException("Unexpected WDC5 metadata size.");
+                    throw new InvalidDataException("WDC5 metadata 大小异常。");
 
                 var layout = new Wdc5Layout
                 {
@@ -221,9 +255,8 @@ namespace WDBXEditor2.Controller
 
                 layout.Columns.AddRange(columns);
 
-                var editableSection = sections.SingleOrDefault(section => section.TactKeyLookup == 0);
-                if (editableSection == null)
-                    throw new InvalidDataException("No unencrypted WDC5 section is available for safe patching.");
+                if (!sections.Any(section => section.TactKeyLookup == 0))
+                    throw new InvalidDataException("没有可用于安全 patch 的未加密 WDC5 section。");
 
                 foreach (var section in sections.Where(section => section.TactKeyLookup == 0))
                     layout.ReadEditableSection(data, section, stringTableSize);
@@ -231,35 +264,57 @@ namespace WDBXEditor2.Controller
                 return layout;
             }
 
+            private static void EnsureAvailable(byte[] data, long offset, int size, string description)
+            {
+                if (offset < 0 || size < 0 || offset + size > data.Length)
+                    throw new InvalidDataException($"读取 {description} 时遇到异常的文件结尾。");
+            }
+
             public void ValidateForInPlacePatch(IDBCDStorage storage)
             {
                 if (storage.FormatIdentifier != "WDC5")
-                    throw new InvalidOperationException($"Expected WDC5 storage, got {storage.FormatIdentifier}.");
+                    throw new InvalidOperationException($"需要 WDC5 storage，但实际是 {storage.FormatIdentifier}。");
 
-                var columnNames = storage.AvailableColumns;
-                int availableRecordFields = columnNames.Length - (Flags.HasFlag(DB2Flags.Index) ? 1 : 0);
-                if (availableRecordFields < Columns.Count)
+                var recordFields = GetInlineRecordFields(storage).ToList();
+                if (recordFields.Count != Columns.Count)
                     throw new InvalidOperationException(
-                        $"DBD field count does not match WDC5 column count. DBD fields: {columnNames.Length}, WDC5 columns: {Columns.Count}, IdFieldIndex: {IdFieldIndex}, Flags: {Flags}."
+                        $"DBD inline 字段数与 WDC5 column 数不匹配。Inline fields: {recordFields.Count}, WDC5 columns: {Columns.Count}, IdFieldIndex: {IdFieldIndex}, Flags: {Flags}。"
                     );
 
-                int columnIndex = 0;
-                for (int i = 0; i < columnNames.Length; i++)
+                for (int i = 0; i < Columns.Count; i++)
+                    Columns[i].Name = recordFields[i].Name;
+            }
+
+            private static IEnumerable<FieldInfo> GetInlineRecordFields(IDBCDStorage storage)
+            {
+                Type recordType = storage.Values.FirstOrDefault()?.GetUnderlyingType();
+                if (recordType == null)
+                    throw new InvalidOperationException("WDC5 安全保存至少需要加载一行数据。");
+
+                var fieldsByName = recordType
+                    .GetFields(BindingFlags.Instance | BindingFlags.Public)
+                    .ToDictionary(field => field.Name, StringComparer.Ordinal);
+
+                foreach (string columnName in storage.AvailableColumns)
                 {
-                    if (i == IdFieldIndex && Flags.HasFlag(DB2Flags.Index))
+                    if (!fieldsByName.TryGetValue(columnName, out FieldInfo field))
+                        throw new InvalidOperationException($"无法把 DBD 字段 '{columnName}' 映射到生成的 storage 类型。");
+
+                    if (IsNonInline(field))
                         continue;
 
-                    if (columnIndex >= Columns.Count)
-                        break;
-
-                    Columns[columnIndex].Name = columnNames[i];
-                    columnIndex++;
+                    yield return field;
                 }
+            }
 
-                if (columnIndex != Columns.Count)
-                    throw new InvalidOperationException(
-                        $"Unable to map DBD fields to WDC5 columns. Mapped: {columnIndex}, WDC5 columns: {Columns.Count}."
-                    );
+            private static bool IsNonInline(FieldInfo field)
+            {
+                var index = field.GetCustomAttribute<IndexAttribute>();
+                if (index != null && index.NonInline)
+                    return true;
+
+                var relation = field.GetCustomAttribute<RelationAttribute>();
+                return relation != null && relation.IsNonInline;
             }
 
             public bool TryGetRecordOffset(int id, out int recordOffset) => editableRecordOffsets.TryGetValue(id, out recordOffset);
@@ -267,15 +322,18 @@ namespace WDBXEditor2.Controller
             private void ReadEditableSection(byte[] data, Wdc5Section section, int totalStringTableSize)
             {
                 if (section.OffsetRecordsEndOffset != 0 || section.OffsetMapIdCount != 0 || section.CopyTableCount != 0)
-                    throw new InvalidDataException("Sparse or copied WDC5 rows are not supported for safe patching.");
+                    throw new InvalidDataException("安全 patch 目前不支持 sparse 或 copied WDC5 行。");
 
                 if (section.StringTableSize != totalStringTableSize)
-                    throw new InvalidDataException("Multi-section string tables are not supported for safe patching.");
+                    throw new InvalidDataException("安全 patch 目前不支持 multi-section string table。");
 
                 if (section.IndexDataSize != section.NumRecords * 4)
-                    throw new InvalidDataException("Unexpected WDC5 index data size.");
+                    throw new InvalidDataException("WDC5 index 数据大小异常。");
 
                 int indexOffset = section.FileOffset + section.NumRecords * RecordSize + section.StringTableSize;
+                int recordDataSize = section.NumRecords * RecordSize;
+                EnsureAvailable(data, section.FileOffset, recordDataSize, "WDC5 record data");
+                EnsureAvailable(data, indexOffset, section.IndexDataSize, "WDC5 index data");
 
                 for (int i = 0; i < section.NumRecords; i++)
                 {

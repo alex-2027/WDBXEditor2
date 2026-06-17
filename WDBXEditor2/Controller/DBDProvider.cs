@@ -58,7 +58,7 @@ namespace WDBXEditor2.Controller
                 }
             }
 
-            throw new FileNotFoundException($"Unable to find definitions for '{Path.GetFileName(tableName)}'. Check GitHub/network access, or place the matching .dbd file in '{DefinitionsPath}'.");
+            throw new FileNotFoundException($"找不到 '{Path.GetFileName(tableName)}' 的 definitions。请检查 GitHub/网络访问，或把匹配的 .dbd 文件放到 '{DefinitionsPath}'。");
         }
 
         private IEnumerable<string> GetDbdNameCandidates(string tableName)

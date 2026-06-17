@@ -68,7 +68,7 @@ namespace WDBXEditor2.Views
         public void SetDB2Name(string db2Name)
         {
             this.db2Name.Content = db2Name;
-            Title = string.Format("Select Definition: {0}", db2Name);
+            Title = string.Format("选择 Definition：{0}", db2Name);
         }
 
         public void SetDefinitionFromVersionDefinitions(VersionDefinitions[] versionDefinitions)
@@ -101,7 +101,7 @@ namespace WDBXEditor2.Views
 
             DefinitionSelectList.ItemsSource = definitionSelectData
                 .OrderByDescending(e => Version.TryParse(e.Version, out var version) ? version : new Version(0, 0))
-                .Prepend(new DefinitionSelectData() { DisplayName = "Autoselect", Version = null })
+                .Prepend(new DefinitionSelectData() { DisplayName = "自动选择", Version = null })
                 .ToList();
         }
 

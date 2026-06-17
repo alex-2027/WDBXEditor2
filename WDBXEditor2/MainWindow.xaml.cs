@@ -46,7 +46,7 @@ namespace WDBXEditor2
             var openFileDialog = new OpenFileDialog
             {
                 Multiselect = true,
-                Filter = "DB2 Files (*.db2)|*.db2",
+                Filter = "DB2 文件 (*.db2)|*.db2",
                 InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyComputer)
             };
 
@@ -90,7 +90,7 @@ namespace WDBXEditor2
             DB2DataGrid.IsEnabled = false;
             PreviousPageButton.IsEnabled = false;
             NextPageButton.IsEnabled = false;
-            Title = $"WDBXEditor2  -  {Constants.Version}  -  Loading {currentOpenDB2}...";
+            Title = $"WDBXEditor2  -  {Constants.Version}  -  正在加载 {currentOpenDB2}...";
 
             try
             {
@@ -112,7 +112,7 @@ namespace WDBXEditor2
             {
                 Console.WriteLine(ex);
                 MessageBox.Show(
-                    string.Format("Cant display {0}.\n{1}", currentOpenDB2, ex.Message),
+                    string.Format("无法显示 {0}。\n{1}", currentOpenDB2, ex.Message),
                     "WDBXEditor2",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning
@@ -147,7 +147,7 @@ namespace WDBXEditor2
         {
             if (openedDB2Storage == null)
             {
-                PageInfoText.Text = "No DB2 loaded";
+                PageInfoText.Text = "未加载 DB2";
                 PreviousPageButton.IsEnabled = false;
                 NextPageButton.IsEnabled = false;
                 return;
@@ -158,7 +158,7 @@ namespace WDBXEditor2
             int firstRow = totalRows == 0 ? 0 : currentPageIndex * PageSize + 1;
             int lastRow = Math.Min(totalRows, (currentPageIndex + 1) * PageSize);
 
-            PageInfoText.Text = $"Page {currentPageIndex + 1:N0} / {totalPages:N0}  Rows {firstRow:N0}-{lastRow:N0} of {totalRows:N0}";
+            PageInfoText.Text = $"第 {currentPageIndex + 1:N0} / {totalPages:N0} 页  第 {firstRow:N0}-{lastRow:N0} 行，共 {totalRows:N0} 行";
             PreviousPageButton.IsEnabled = currentPageIndex > 0;
             NextPageButton.IsEnabled = currentPageIndex < totalPages - 1;
             Title = $"WDBXEditor2  -  {Constants.Version}  -  {currentOpenDB2}  -  {PageInfoText.Text}";
@@ -239,7 +239,7 @@ namespace WDBXEditor2
             if (!dbLoader.LoadedDBFilePaths.TryGetValue(currentOpenDB2, out string originalPath))
             {
                 MessageBox.Show(
-                    $"Cant find original path for {currentOpenDB2}. Use Save As to choose a target file.",
+                    $"找不到 {currentOpenDB2} 的原始路径。请使用“另存为”选择目标文件。",
                     "WDBXEditor2",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning
@@ -258,7 +258,7 @@ namespace WDBXEditor2
             var saveFileDialog = new SaveFileDialog
             {
                 FileName = currentOpenDB2,
-                Filter = "DB2 Files (*.db2)|*.db2",
+                Filter = "DB2 文件 (*.db2)|*.db2",
                 InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyComputer)
             };
 
@@ -278,8 +278,8 @@ namespace WDBXEditor2
             {
                 MessageBox.Show(
                     $"{Path.GetFileName(targetFile)} is {storage.FormatIdentifier}.\n\n" +
-                    "Saving modern client DB2 formats is disabled in this build because the bundled writer rewrites table sections and can produce files the WoW client rejects with ERROR #134.\n\n" +
-                    "The file was not changed.",
+                    "此版本暂不允许保存该现代客户端 DB2 格式，因为旧写入器会重写表 section，可能生成被 WoW 客户端以 ERROR #134 拒绝的文件。\n\n" +
+                    "文件未被修改。",
                     "WDBXEditor2",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning
@@ -289,10 +289,14 @@ namespace WDBXEditor2
 
             try
             {
-                if (storage.FormatIdentifier == "WDC5" &&
-                    dbLoader.LoadedDBFilePaths.TryGetValue(currentOpenDB2, out string sourceFile) &&
-                    File.Exists(sourceFile))
+                if (storage.FormatIdentifier == "WDC5")
                 {
+                    if (!dbLoader.LoadedDBFilePaths.TryGetValue(currentOpenDB2, out string sourceFile) ||
+                        !File.Exists(sourceFile))
+                    {
+                        throw new InvalidOperationException("WDC5 安全保存需要原始加载的 DB2 文件仍然存在。");
+                    }
+
                     Wdc5InPlacePatcher.Save(storage, sourceFile, targetFile);
                 }
                 else
@@ -301,7 +305,7 @@ namespace WDBXEditor2
                 }
 
                 MessageBox.Show(
-                    $"Saved {Path.GetFileName(targetFile)}.\nA backup was created next to the target file.",
+                    $"已保存 {Path.GetFileName(targetFile)}。\n已在目标文件旁创建备份。",
                     "WDBXEditor2",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information
@@ -310,7 +314,7 @@ namespace WDBXEditor2
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    $"Cant save {Path.GetFileName(targetFile)}.\n{ex.Message}",
+                    $"无法保存 {Path.GetFileName(targetFile)}。\n{ex.Message}",
                     "WDBXEditor2",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error
@@ -357,13 +361,13 @@ namespace WDBXEditor2
             var parser = new DBCD.IO.DBParser(stream);
 
             if (parser.Identifier != storage.FormatIdentifier)
-                throw new InvalidDataException($"Saved DB2 format changed from {storage.FormatIdentifier} to {parser.Identifier}.");
+                throw new InvalidDataException($"保存后的 DB2 格式从 {storage.FormatIdentifier} 变成了 {parser.Identifier}。");
 
             if (parser.LayoutHash != storage.LayoutHash)
-                throw new InvalidDataException($"Saved DB2 layout hash changed from 0x{storage.LayoutHash:X8} to 0x{parser.LayoutHash:X8}.");
+                throw new InvalidDataException($"保存后的 DB2 layout hash 从 0x{storage.LayoutHash:X8} 变成了 0x{parser.LayoutHash:X8}。");
 
             if (parser.RecordsCount != storage.Values.Count)
-                throw new InvalidDataException($"Saved DB2 row count changed from {storage.Values.Count} to {parser.RecordsCount}.");
+                throw new InvalidDataException($"保存后的 DB2 行数从 {storage.Values.Count} 变成了 {parser.RecordsCount}。");
         }
 
         private void Exit_Click(object sender, RoutedEventArgs e)
