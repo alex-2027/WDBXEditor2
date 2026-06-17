@@ -108,6 +108,8 @@ namespace WDBXEditor2.Controller
         private sealed class Wdc5Layout
         {
             public int RecordSize { get; private set; }
+            public int IdFieldIndex { get; private set; }
+            public DB2Flags Flags { get; private set; }
             public int EditableRecordCount => editableRecordOffsets.Count;
             public List<Wdc5Column> Columns { get; } = new List<Wdc5Column>();
 
@@ -133,7 +135,7 @@ namespace WDBXEditor2.Controller
                 reader.ReadInt32(); // max index
                 reader.ReadInt32(); // locale
                 var flags = (DB2Flags)reader.ReadUInt16();
-                reader.ReadUInt16(); // id field index
+                int idFieldIndex = reader.ReadUInt16();
                 int totalFieldCount = reader.ReadInt32();
                 reader.ReadInt32(); // packed data offset
                 int lookupColumnCount = reader.ReadInt32();
@@ -212,7 +214,9 @@ namespace WDBXEditor2.Controller
 
                 var layout = new Wdc5Layout
                 {
-                    RecordSize = recordSize
+                    RecordSize = recordSize,
+                    IdFieldIndex = idFieldIndex,
+                    Flags = flags
                 };
 
                 layout.Columns.AddRange(columns);
@@ -233,11 +237,21 @@ namespace WDBXEditor2.Controller
                     throw new InvalidOperationException($"Expected WDC5 storage, got {storage.FormatIdentifier}.");
 
                 var columnNames = storage.AvailableColumns;
-                if (columnNames.Length != Columns.Count)
-                    throw new InvalidOperationException("DBD field count does not match WDC5 column count.");
+                int expectedColumns = columnNames.Length - (Flags.HasFlag(DB2Flags.Index) ? 1 : 0);
+                if (expectedColumns != Columns.Count)
+                    throw new InvalidOperationException(
+                        $"DBD field count does not match WDC5 column count. DBD fields: {columnNames.Length}, WDC5 columns: {Columns.Count}, IdFieldIndex: {IdFieldIndex}, Flags: {Flags}."
+                    );
 
-                for (int i = 0; i < Columns.Count; i++)
-                    Columns[i].Name = columnNames[i];
+                int columnIndex = 0;
+                for (int i = 0; i < columnNames.Length; i++)
+                {
+                    if (i == IdFieldIndex && Flags.HasFlag(DB2Flags.Index))
+                        continue;
+
+                    Columns[columnIndex].Name = columnNames[i];
+                    columnIndex++;
+                }
             }
 
             public bool TryGetRecordOffset(int id, out int recordOffset) => editableRecordOffsets.TryGetValue(id, out recordOffset);
