@@ -116,6 +116,7 @@ namespace DBCD
     public interface IDBCDStorage : IEnumerable<DynamicKeyValuePair<int>>, IDictionary<int, DBCDRow>
     {
         string[] AvailableColumns { get; }
+        string FormatIdentifier { get; }
         uint LayoutHash { get;  }
 
         DBCDRow ConstructRow(int index);
@@ -139,6 +140,7 @@ namespace DBCD
         private readonly DBParser parser;
 
         string[] IDBCDStorage.AvailableColumns => this.info.availableColumns;
+        public string FormatIdentifier => this.storage.Identifier;
         public uint LayoutHash => this.storage.LayoutHash;
         public override string ToString() => $"{this.info.tableName}";
 

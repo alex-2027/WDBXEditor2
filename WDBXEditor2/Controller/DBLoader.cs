@@ -14,6 +14,7 @@ namespace WDBXEditor2.Controller
     public class DBLoader
     {
         public ConcurrentDictionary<string, IDBCDStorage> LoadedDBFiles;
+        public ConcurrentDictionary<string, string> LoadedDBFilePaths;
 
         private readonly DBDProvider dbdProvider;
         private readonly DBCProvider dbcProvider;
@@ -24,6 +25,7 @@ namespace WDBXEditor2.Controller
             dbcProvider = new DBCProvider();
 
             LoadedDBFiles = new ConcurrentDictionary<string, IDBCDStorage>();
+            LoadedDBFilePaths = new ConcurrentDictionary<string, string>();
         }
 
         public string[] LoadFiles(string[] files)
@@ -36,6 +38,7 @@ namespace WDBXEditor2.Controller
             foreach (string db2Path in files)
             {
                 string db2Name = Path.GetFileName(db2Path);
+                string displayName = db2Name;
 
                 try
                 {
@@ -50,10 +53,16 @@ namespace WDBXEditor2.Controller
                     stopWatch = new Stopwatch();
                     var storage = dbcd.Load(db2Path, definitionSelect.SelectedVersion, definitionSelect.SelectedLocale);
 
-                    if (LoadedDBFiles.ContainsKey(db2Name))
-                        loadedFiles.Add(db2Name);
-                    else if (LoadedDBFiles.TryAdd(db2Name, storage))
-                        loadedFiles.Add(db2Name);
+                    if (LoadedDBFiles.ContainsKey(displayName))
+                    {
+                        displayName = db2Path;
+                    }
+
+                    if (LoadedDBFiles.TryAdd(displayName, storage))
+                    {
+                        LoadedDBFilePaths.TryAdd(displayName, db2Path);
+                        loadedFiles.Add(displayName);
+                    }
 
                     stopWatch.Stop();
                     Console.WriteLine($"Loading File: {db2Name} Elapsed Time: {stopWatch.Elapsed}");

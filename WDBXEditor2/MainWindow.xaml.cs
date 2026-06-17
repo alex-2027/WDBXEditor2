@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -25,6 +26,11 @@ namespace WDBXEditor2
         private List<DBCDRow> currentGridRows = new List<DBCDRow>();
         private int currentPageIndex = 0;
         private const int PageSize = 5000;
+        private static readonly HashSet<string> ReadOnlyClientFormats = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "WDC4",
+            "WDC5"
+        };
 
         public MainWindow()
         {
@@ -228,8 +234,21 @@ namespace WDBXEditor2
 
         private void Save_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(currentOpenDB2))
-                dbLoader.LoadedDBFiles[currentOpenDB2].Save(currentOpenDB2);
+            if (string.IsNullOrEmpty(currentOpenDB2))
+                return;
+
+            if (!dbLoader.LoadedDBFilePaths.TryGetValue(currentOpenDB2, out string originalPath))
+            {
+                MessageBox.Show(
+                    $"Cant find original path for {currentOpenDB2}. Use Save As to choose a target file.",
+                    "WDBXEditor2",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning
+                );
+                return;
+            }
+
+            SaveStorageToFile(originalPath);
         }
 
         private void SaveAs_Click(object sender, RoutedEventArgs e)
@@ -246,8 +265,96 @@ namespace WDBXEditor2
 
             if (saveFileDialog.ShowDialog() == true)
             {
-                dbLoader.LoadedDBFiles[currentOpenDB2].Save(saveFileDialog.FileName);
+                SaveStorageToFile(saveFileDialog.FileName);
             }
+        }
+
+        private void SaveStorageToFile(string targetFile)
+        {
+            if (string.IsNullOrEmpty(currentOpenDB2) ||
+                !dbLoader.LoadedDBFiles.TryGetValue(currentOpenDB2, out IDBCDStorage storage))
+                return;
+
+            if (ReadOnlyClientFormats.Contains(storage.FormatIdentifier))
+            {
+                MessageBox.Show(
+                    $"{Path.GetFileName(targetFile)} is {storage.FormatIdentifier}.\n\n" +
+                    "Saving modern client DB2 formats is disabled in this build because the bundled writer rewrites table sections and can produce files the WoW client rejects with ERROR #134.\n\n" +
+                    "The file was not changed.",
+                    "WDBXEditor2",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning
+                );
+                return;
+            }
+
+            try
+            {
+                SafeSaveStorage(storage, targetFile);
+                MessageBox.Show(
+                    $"Saved {Path.GetFileName(targetFile)}.\nA backup was created next to the target file.",
+                    "WDBXEditor2",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information
+                );
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Cant save {Path.GetFileName(targetFile)}.\n{ex.Message}",
+                    "WDBXEditor2",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error
+                );
+            }
+        }
+
+        private static void SafeSaveStorage(IDBCDStorage storage, string targetFile)
+        {
+            string targetDirectory = Path.GetDirectoryName(targetFile);
+            if (string.IsNullOrEmpty(targetDirectory))
+                targetDirectory = Directory.GetCurrentDirectory();
+
+            Directory.CreateDirectory(targetDirectory);
+
+            string tempFile = Path.Combine(
+                targetDirectory,
+                $".{Path.GetFileName(targetFile)}.{Guid.NewGuid():N}.tmp"
+            );
+
+            try
+            {
+                storage.Save(tempFile);
+                ValidateSavedFile(storage, tempFile);
+
+                if (File.Exists(targetFile))
+                {
+                    string backupFile = $"{targetFile}.{DateTime.Now:yyyyMMddHHmmss}.bak";
+                    File.Copy(targetFile, backupFile, overwrite: false);
+                }
+
+                File.Copy(tempFile, targetFile, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(tempFile))
+                    File.Delete(tempFile);
+            }
+        }
+
+        private static void ValidateSavedFile(IDBCDStorage storage, string savedFile)
+        {
+            using var stream = File.Open(savedFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var parser = new DBCD.IO.DBParser(stream);
+
+            if (parser.Identifier != storage.FormatIdentifier)
+                throw new InvalidDataException($"Saved DB2 format changed from {storage.FormatIdentifier} to {parser.Identifier}.");
+
+            if (parser.LayoutHash != storage.LayoutHash)
+                throw new InvalidDataException($"Saved DB2 layout hash changed from 0x{storage.LayoutHash:X8} to 0x{parser.LayoutHash:X8}.");
+
+            if (parser.RecordsCount != storage.Values.Count)
+                throw new InvalidDataException($"Saved DB2 row count changed from {storage.Values.Count} to {parser.RecordsCount}.");
         }
 
         private void Exit_Click(object sender, RoutedEventArgs e)
