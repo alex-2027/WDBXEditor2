@@ -289,6 +289,8 @@ namespace WDBXEditor2
 
             try
             {
+                string successMessage;
+
                 if (storage.FormatIdentifier == "WDC5")
                 {
                     if (!dbLoader.LoadedDBFilePaths.TryGetValue(currentOpenDB2, out string sourceFile) ||
@@ -297,15 +299,24 @@ namespace WDBXEditor2
                         throw new InvalidOperationException("WDC5 安全保存需要原始加载的 DB2 文件仍然存在。");
                     }
 
-                    Wdc5InPlacePatcher.Save(storage, sourceFile, targetFile);
+                    var result = Wdc5InPlacePatcher.Save(storage, sourceFile, targetFile);
+                    successMessage =
+                        $"已通过 WDC5 安全 patch 保存 {Path.GetFileName(targetFile)}。\n" +
+                        $"实际变更行数：{result.ChangedRows:N0}\n" +
+                        $"可编辑行数：{result.EditableRows:N0}\n" +
+                        $"记录数：{result.RecordsCount:N0}\n" +
+                        $"Section 数：{result.SectionsCount:N0}\n" +
+                        $"文件大小：{result.FileSize:N0} 字节\n" +
+                        $"备份文件：{(string.IsNullOrEmpty(result.BackupFile) ? "无" : Path.GetFileName(result.BackupFile))}";
                 }
                 else
                 {
                     SafeSaveStorage(storage, targetFile);
+                    successMessage = $"已保存 {Path.GetFileName(targetFile)}。\n已在目标文件旁创建备份。";
                 }
 
                 MessageBox.Show(
-                    $"已保存 {Path.GetFileName(targetFile)}。\n已在目标文件旁创建备份。",
+                    successMessage,
                     "WDBXEditor2",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information

@@ -15,32 +15,50 @@ namespace WDBXEditor2.Controller
         private const int SectionHeaderSize = 40;
         private const int ColumnMetaSize = 24;
 
-        public static void Save(IDBCDStorage storage, string sourceFile, string targetFile)
+        public static Wdc5PatchSaveResult Save(IDBCDStorage storage, string sourceFile, string targetFile)
         {
             byte[] data = File.ReadAllBytes(sourceFile);
             var layout = Wdc5Layout.Parse(data);
             layout.ValidateForInPlacePatch(storage);
 
             var patched = (byte[])data.Clone();
-            int patchedRows = 0;
+            int changedRows = 0;
+            int editableRows = 0;
 
             foreach (var row in storage.Values)
             {
                 if (!layout.TryGetRecordOffset(row.ID, out int recordOffset))
                     continue;
 
-                WriteRow(patched, recordOffset, row, layout);
-                patchedRows++;
+                if (WriteRow(patched, recordOffset, row, layout))
+                    changedRows++;
+
+                editableRows++;
             }
 
-            if (patchedRows == 0)
+            if (editableRows == 0)
                 throw new InvalidOperationException("未在未加密 section 中找到可编辑的 WDC5 行。");
 
-            SafeReplace(targetFile, patched);
+            var patchedLayout = Wdc5Layout.Parse(patched);
+            ValidateSavedPatch(layout, patchedLayout, data.Length, patched.Length);
+            string backupFile = SafeReplace(targetFile, patched);
+
+            return new Wdc5PatchSaveResult
+            {
+                ChangedRows = changedRows,
+                EditableRows = editableRows,
+                RecordsCount = patchedLayout.RecordsCount,
+                SectionsCount = patchedLayout.SectionsCount,
+                FileSize = patched.Length,
+                BackupFile = backupFile
+            };
         }
 
-        private static void WriteRow(byte[] data, int recordOffset, DBCDRow row, Wdc5Layout layout)
+        private static bool WriteRow(byte[] data, int recordOffset, DBCDRow row, Wdc5Layout layout)
         {
+            var originalRecordBits = new byte[layout.RecordSize];
+            Buffer.BlockCopy(data, recordOffset, originalRecordBits, 0, layout.RecordSize);
+
             var recordBits = new byte[layout.RecordSize];
             Buffer.BlockCopy(data, recordOffset, recordBits, 0, layout.RecordSize);
 
@@ -58,7 +76,24 @@ namespace WDBXEditor2.Controller
                 WriteBits(recordBits, column.BitOffset, column.BitWidth, palletIndex);
             }
 
+            bool changed = !originalRecordBits.SequenceEqual(recordBits);
             Buffer.BlockCopy(recordBits, 0, data, recordOffset, layout.RecordSize);
+            return changed;
+        }
+
+        private static void ValidateSavedPatch(Wdc5Layout original, Wdc5Layout saved, long originalFileSize, long savedFileSize)
+        {
+            if (savedFileSize != originalFileSize)
+                throw new InvalidDataException($"安全 patch 后文件大小发生变化：{originalFileSize} -> {savedFileSize}。");
+
+            if (saved.RecordsCount != original.RecordsCount)
+                throw new InvalidDataException($"安全 patch 后记录数发生变化：{original.RecordsCount} -> {saved.RecordsCount}。");
+
+            if (saved.SectionsCount != original.SectionsCount)
+                throw new InvalidDataException($"安全 patch 后 section 数发生变化：{original.SectionsCount} -> {saved.SectionsCount}。");
+
+            if (saved.LayoutHash != original.LayoutHash)
+                throw new InvalidDataException($"安全 patch 后 layout hash 发生变化：0x{original.LayoutHash:X8} -> 0x{saved.LayoutHash:X8}。");
         }
 
         private static uint ToRawUInt32(object value)
@@ -77,7 +112,7 @@ namespace WDBXEditor2.Controller
             };
         }
 
-        private static void SafeReplace(string targetFile, byte[] data)
+        private static string SafeReplace(string targetFile, byte[] data)
         {
             string targetDirectory = Path.GetDirectoryName(targetFile);
             if (string.IsNullOrEmpty(targetDirectory))
@@ -90,17 +125,20 @@ namespace WDBXEditor2.Controller
                 $".{Path.GetFileName(targetFile)}.{Guid.NewGuid():N}.tmp"
             );
 
+            string backupFile = null;
+
             try
             {
                 File.WriteAllBytes(tempFile, data);
 
                 if (File.Exists(targetFile))
                 {
-                    string backupFile = $"{targetFile}.{DateTime.Now:yyyyMMddHHmmss}.bak";
+                    backupFile = $"{targetFile}.{DateTime.Now:yyyyMMddHHmmss}.bak";
                     File.Copy(targetFile, backupFile, overwrite: false);
                 }
 
                 File.Copy(tempFile, targetFile, overwrite: true);
+                return backupFile;
             }
             finally
             {
@@ -126,6 +164,9 @@ namespace WDBXEditor2.Controller
 
         private sealed class Wdc5Layout
         {
+            public int RecordsCount { get; private set; }
+            public int SectionsCount { get; private set; }
+            public uint LayoutHash { get; private set; }
             public int RecordSize { get; private set; }
             public int IdFieldIndex { get; private set; }
             public DB2Flags Flags { get; private set; }
@@ -152,7 +193,7 @@ namespace WDBXEditor2.Controller
                 int recordSize = reader.ReadInt32();
                 int stringTableSize = reader.ReadInt32();
                 reader.ReadUInt32(); // table hash
-                reader.ReadUInt32(); // layout hash
+                uint layoutHash = reader.ReadUInt32();
                 reader.ReadInt32(); // min index
                 reader.ReadInt32(); // max index
                 reader.ReadInt32(); // locale
@@ -248,6 +289,9 @@ namespace WDBXEditor2.Controller
 
                 var layout = new Wdc5Layout
                 {
+                    RecordsCount = recordsCount,
+                    SectionsCount = sectionsCount,
+                    LayoutHash = layoutHash,
                     RecordSize = recordSize,
                     IdFieldIndex = idFieldIndex,
                     Flags = flags
@@ -365,5 +409,15 @@ namespace WDBXEditor2.Controller
             public int OffsetMapIdCount { get; set; }
             public int CopyTableCount { get; set; }
         }
+    }
+
+    internal sealed class Wdc5PatchSaveResult
+    {
+        public int ChangedRows { get; set; }
+        public int EditableRows { get; set; }
+        public int RecordsCount { get; set; }
+        public int SectionsCount { get; set; }
+        public long FileSize { get; set; }
+        public string BackupFile { get; set; }
     }
 }
