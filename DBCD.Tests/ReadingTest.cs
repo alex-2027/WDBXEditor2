@@ -388,7 +388,7 @@ namespace DBCD.Tests
         [TestMethod]
         public void TestReadingAllDB2s()
         {
-            return; // Only run this test manually
+            Assert.Inconclusive("Only run this test manually.");
             var localDBDProvider = new FilesystemDBDProvider("D:\\Projects\\WoWDBDefs\\definitions");
 
             //var build = "3.3.5.12340"; // WDBC
@@ -423,10 +423,10 @@ namespace DBCD.Tests
 
                 try
                 {
-                    var storage = dbcd.Load(tableName, build);
+                    dbcd.Load(tableName, build);
                     successfulTables++;
                 }
-                catch (FileNotFoundException e)
+                catch (FileNotFoundException)
                 {
                     Console.WriteLine($"Failed to load {tableName} for build {build}, does not exist in build.");
                     successfulTables++; // this counts

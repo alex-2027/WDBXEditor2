@@ -21,11 +21,12 @@ namespace DBCD.Providers
                 LoadDBDManifest();
         }
 
-        private struct DBDManifestEntry {
-            public string tableName;
-            public string tableHash;
-            public uint dbcFileDataID;
-            public uint db2FileDataID;
+        private sealed class DBDManifestEntry
+        {
+            public string tableName { get; set; }
+            public string tableHash { get; set; }
+            public uint dbcFileDataID { get; set; }
+            public uint db2FileDataID { get; set; }
         }
 
         private void LoadDBDManifest()

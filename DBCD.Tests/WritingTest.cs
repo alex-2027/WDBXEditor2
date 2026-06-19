@@ -93,7 +93,7 @@ namespace DBCD.Tests
         [TestMethod]
         public void TestWritingAllDB2s()
         {
-            return; // Only run this test manually
+            Assert.Inconclusive("Only run this test manually.");
 
             var localDBDProvider = new FilesystemDBDProvider("D:\\Projects\\WoWDBDefs\\definitions");
 
@@ -154,7 +154,7 @@ namespace DBCD.Tests
                     originalValues.AddRange(originalStorage.Values);
                     originalStorage.Save($"tmp/{tableName}.db2");
                 }
-                catch (FileNotFoundException e)
+                catch (FileNotFoundException)
                 {
                     // This is not a reading test, I could not care less
                     attemptedTables--;

@@ -9,6 +9,7 @@
 Changes.txt
 .DS_Store
 Cache/
+WDBXEditor2/definitions/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
