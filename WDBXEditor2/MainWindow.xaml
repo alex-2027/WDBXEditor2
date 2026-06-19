@@ -39,7 +39,7 @@
         </Menu>
         <Grid Grid.Row="1" Grid.ColumnSpan="2">
             <DataGrid x:Name="DB2DataGrid" Margin="5,5,5,5" Background="#FF939393" CanUserResizeRows="False"
-                      CanUserReorderColumns="False" CanUserSortColumns="False" AutoGenerateColumns="True"
+                      CanUserReorderColumns="False" CanUserSortColumns="True" AutoGenerateColumns="True"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                       ItemsSource="{Binding null, IsAsync=True}" EnableColumnVirtualization="True" EnableRowVirtualization="True"
                       CellEditEnding="DB2DataGrid_CellEditEnding" />

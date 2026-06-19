@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\DBCD.IO\DBCD.IO.csproj" />
     <ProjectReference Include="..\DBCD\DBCD.csproj" />
+    <ProjectReference Include="..\WDBXEditor2.Core\WDBXEditor2.Core.csproj" />
   </ItemGroup>
 
 </Project>

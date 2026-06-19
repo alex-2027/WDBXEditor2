@@ -6,6 +6,7 @@ using System.Data;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
@@ -24,8 +25,10 @@ namespace WDBXEditor2
         private string currentOpenDB2 = string.Empty;
         private IDBCDStorage openedDB2Storage;
         private List<DBCDRow> currentGridRows = new List<DBCDRow>();
+        private Dictionary<string, GridColumnBinding> currentGridColumnBindings = new Dictionary<string, GridColumnBinding>(StringComparer.Ordinal);
         private int currentPageIndex = 0;
         private const int PageSize = 5000;
+        private const string RowReferenceColumnName = "__RowReference";
         private static readonly HashSet<string> ReadOnlyClientFormats = new HashSet<string>(StringComparer.Ordinal)
         {
             "WDC4"
@@ -65,6 +68,7 @@ namespace WDBXEditor2
             DB2DataGrid.Columns.Clear();
             DB2DataGrid.ItemsSource = new List<string>();
             currentGridRows = new List<DBCDRow>();
+            currentGridColumnBindings = new Dictionary<string, GridColumnBinding>(StringComparer.Ordinal);
             currentPageIndex = 0;
             UpdatePagingControls();
 
@@ -105,7 +109,9 @@ namespace WDBXEditor2
                 Console.WriteLine($"Populating Grid: {currentOpenDB2} page {currentPageIndex + 1} Elapsed Time: {stopWatch.Elapsed}");
 
                 currentGridRows = result.Rows;
+                currentGridColumnBindings = result.ColumnBindings;
                 DB2DataGrid.ItemsSource = result.Table.DefaultView;
+                HideInternalColumns();
                 UpdatePagingControls();
             }
             catch (Exception ex)
@@ -126,9 +132,10 @@ namespace WDBXEditor2
             }
         }
 
-        private static (DataTable Table, List<DBCDRow> Rows) BuildPageData(IDBCDStorage storage, int pageIndex)
+        private static (DataTable Table, List<DBCDRow> Rows, Dictionary<string, GridColumnBinding> ColumnBindings) BuildPageData(IDBCDStorage storage, int pageIndex)
         {
             var data = new DataTable();
+            var columnBindings = new Dictionary<string, GridColumnBinding>(StringComparer.Ordinal);
             var rows = storage.Values
                 .Skip(pageIndex * PageSize)
                 .Take(PageSize)
@@ -136,11 +143,11 @@ namespace WDBXEditor2
 
             if (rows.Count > 0)
             {
-                PopulateColumns(rows[0], ref data);
+                PopulateColumns(rows[0], ref data, columnBindings);
                 PopulateDataView(rows, ref data);
             }
 
-            return (data, rows);
+            return (data, rows, columnBindings);
         }
 
         private void UpdatePagingControls()
@@ -167,8 +174,10 @@ namespace WDBXEditor2
         /// <summary>
         /// Populate the DataView with the DB2 Columns.
         /// </summary>
-        private static void PopulateColumns(DBCDRow firstItem, ref DataTable data)
+        private static void PopulateColumns(DBCDRow firstItem, ref DataTable data, IDictionary<string, GridColumnBinding> columnBindings)
         {
+            data.Columns.Add(RowReferenceColumnName, typeof(DBCDRow));
+
             foreach (string columnName in firstItem.GetDynamicMemberNames())
             {
                 var columnValue = firstItem[columnName];
@@ -176,11 +185,19 @@ namespace WDBXEditor2
                 if (columnValue.GetType().IsArray)
                 {
                     Array columnValueArray = (Array)columnValue;
+                    Type elementType = columnValue.GetType().GetElementType() ?? typeof(string);
                     for (var i = 0; i < columnValueArray.Length; ++i)
-                        data.Columns.Add(columnName + i);
+                    {
+                        string displayColumnName = $"{columnName}{i}";
+                        data.Columns.Add(displayColumnName, GetDataColumnType(elementType));
+                        columnBindings[displayColumnName] = new GridColumnBinding(columnName, i);
+                    }
                 }
                 else
-                    data.Columns.Add(columnName);
+                {
+                    data.Columns.Add(columnName, GetDataColumnType(columnValue.GetType()));
+                    columnBindings[columnName] = new GridColumnBinding(columnName, null);
+                }
             }
         }
 
@@ -192,6 +209,7 @@ namespace WDBXEditor2
             foreach (var rowData in rows)
             {
                 var row = data.NewRow();
+                row[RowReferenceColumnName] = rowData;
 
                 foreach (string columnName in rowData.GetDynamicMemberNames())
                 {
@@ -211,6 +229,26 @@ namespace WDBXEditor2
             }
         }
 
+        private void HideInternalColumns()
+        {
+            var internalColumn = DB2DataGrid.Columns
+                .FirstOrDefault(column => string.Equals(column.SortMemberPath, RowReferenceColumnName, StringComparison.Ordinal) ||
+                                          string.Equals(column.Header?.ToString(), RowReferenceColumnName, StringComparison.Ordinal));
+
+            if (internalColumn != null)
+                internalColumn.Visibility = Visibility.Collapsed;
+        }
+
+        private static Type GetDataColumnType(Type type)
+        {
+            Type underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+
+            if (underlyingType.IsEnum)
+                return Enum.GetUnderlyingType(underlyingType);
+
+            return underlyingType;
+        }
+
         /// <summary>
         /// Close the currently opened DB2 file.
         /// </summary>
@@ -227,6 +265,7 @@ namespace WDBXEditor2
             currentOpenDB2 = string.Empty;
             openedDB2Storage = null;
             currentGridRows = new List<DBCDRow>();
+            currentGridColumnBindings = new Dictionary<string, GridColumnBinding>(StringComparer.Ordinal);
             currentPageIndex = 0;
             UpdatePagingControls();
         }
@@ -423,27 +462,58 @@ namespace WDBXEditor2
                     if (newVal == null)
                         return;
 
-                    var dbcRow = currentGridRows[rowIdx];
-                    SetColumnValue(dbcRow, e.Column.Header.ToString(), newVal.Text);
+                    var dataRowView = e.Row.Item as DataRowView;
+                    var dbcRow = ResolveBackingRow(rowIdx, dataRowView);
+                    SetColumnValue(dbcRow, e.Column.Header.ToString(), newVal.Text, currentGridColumnBindings);
 
                     Console.WriteLine($"RowIdx: {rowIdx} Text: {newVal.Text}");
                 }
             }
         }
 
-        private static void SetColumnValue(DBCDRow row, string columnName, string value)
+        private DBCDRow ResolveBackingRow(int rowIdx, DataRowView dataRowView)
         {
-            var arrayColumnMatch = Regex.Match(columnName, @"^(?<name>.+?)(?<index>\d+)$");
-            if (arrayColumnMatch.Success)
+            if (TryResolveBackingRow(dataRowView, out var row))
+                return row;
+
+            throw new InvalidOperationException("无法定位当前编辑行。");
+        }
+
+        private bool TryResolveBackingRow(DataRowView dataRowView, out DBCDRow row)
+        {
+            row = null;
+
+            if (dataRowView?.Row == null || !dataRowView.Row.Table.Columns.Contains(RowReferenceColumnName))
+                return false;
+
+            row = dataRowView.Row[RowReferenceColumnName] as DBCDRow;
+            return row != null;
+        }
+
+        private static void SetColumnValue(DBCDRow row, string columnName, string value, IReadOnlyDictionary<string, GridColumnBinding> columnBindings)
+        {
+            if (!columnBindings.TryGetValue(columnName, out var binding))
+                throw new InvalidOperationException($"无法确定列 {columnName} 对应的 DB2 字段。");
+
+            if (binding.ArrayIndex.HasValue)
             {
-                row[
-                    arrayColumnMatch.Groups["name"].Value,
-                    int.Parse(arrayColumnMatch.Groups["index"].Value)
-                ] = value;
+                row[binding.FieldName, binding.ArrayIndex.Value] = value;
                 return;
             }
 
-            row[columnName] = value;
+            row[binding.FieldName] = value;
+        }
+
+        private sealed class GridColumnBinding
+        {
+            public GridColumnBinding(string fieldName, int? arrayIndex)
+            {
+                FieldName = fieldName;
+                ArrayIndex = arrayIndex;
+            }
+
+            public string FieldName { get; }
+            public int? ArrayIndex { get; }
         }
     }
 }

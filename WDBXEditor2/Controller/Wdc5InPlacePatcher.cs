@@ -9,10 +9,11 @@ using System.Reflection;
 
 namespace WDBXEditor2.Controller
 {
-    internal static class Wdc5InPlacePatcher
+    public static class Wdc5InPlacePatcher
     {
         private const int HeaderSize = 204;
         private const int SectionHeaderSize = 40;
+        private const int FieldMetaSize = 4;
         private const int ColumnMetaSize = 24;
 
         public static Wdc5PatchSaveResult Save(IDBCDStorage storage, string sourceFile, string targetFile)
@@ -66,14 +67,7 @@ namespace WDBXEditor2.Controller
             {
                 var column = layout.Columns[i];
                 object value = row[column.Name];
-                uint rawValue = ToRawUInt32(value);
-
-                if (!column.PalletIndexByValue.TryGetValue(rawValue, out uint palletIndex))
-                    throw new InvalidOperationException(
-                        $"第 {row.ID} 行字段 {column.Name} 的值 {rawValue} 不存在于原始 WDC5 pallet 数据中。"
-                    );
-
-                WriteBits(recordBits, column.BitOffset, column.BitWidth, palletIndex);
+                WriteColumnValue(data, recordBits, row.ID, column, value);
             }
 
             bool changed = !originalRecordBits.SequenceEqual(recordBits);
@@ -108,8 +102,158 @@ namespace WDBXEditor2.Controller
                 uint typedValue => typedValue,
                 long typedValue => unchecked((uint)typedValue),
                 ulong typedValue => unchecked((uint)typedValue),
+                float typedValue => BitConverter.ToUInt32(BitConverter.GetBytes(typedValue), 0),
                 _ => Convert.ToUInt32(value)
             };
+        }
+
+        private static void WriteColumnValue(byte[] fileData, byte[] recordBits, int rowId, Wdc5Column column, object value)
+        {
+            if (column.IsStringLike)
+            {
+                throw new InvalidOperationException(
+                    $"字段 {column.Name} 是字符串列，当前 WDC5 安全 patch 暂不支持修改字符串字段。"
+                );
+            }
+
+            if (value is Array arrayValue)
+            {
+                WriteArrayColumnValue(recordBits, rowId, column, arrayValue);
+                return;
+            }
+
+            uint rawValue = ToRawUInt32(value);
+
+            switch (column.CompressionType)
+            {
+                case Wdc5CompressionType.None:
+                case Wdc5CompressionType.Immediate:
+                case Wdc5CompressionType.SignedImmediate:
+                    WriteBits(recordBits, column.BitOffset, column.BitWidth, rawValue);
+                    break;
+                case Wdc5CompressionType.Common:
+                    WriteCommonValue(fileData, rowId, column, rawValue);
+                    break;
+                case Wdc5CompressionType.Pallet:
+                    if (!column.PalletIndexByValue.TryGetValue(rawValue, out uint palletIndex))
+                    {
+                        throw new InvalidOperationException(
+                            $"第 {rowId} 行字段 {column.Name} 的值 {rawValue} 不存在于原始 WDC5 pallet 数据中。当前安全 patch 只能写回原文件 palette 中已经存在的值，不能新增 palette 项。"
+                        );
+                    }
+
+                    WriteBits(recordBits, column.BitOffset, column.BitWidth, palletIndex);
+                    break;
+                case Wdc5CompressionType.PalletArray:
+                    if (column.Cardinality != 1)
+                        throw new InvalidOperationException($"字段 {column.Name} 使用了 cardinality={column.Cardinality} 的 pallet-array，当前安全 patch 尚不支持。");
+
+                    if (!column.PalletIndexByValue.TryGetValue(rawValue, out uint palletArrayIndex))
+                    {
+                        throw new InvalidOperationException(
+                            $"第 {rowId} 行字段 {column.Name} 的值 {rawValue} 不存在于原始 WDC5 pallet-array 数据中。当前安全 patch 只能写回原文件 palette 中已经存在的值，不能新增 palette 项。"
+                        );
+                    }
+
+                    WriteBits(recordBits, column.BitOffset, column.BitWidth, palletArrayIndex);
+                    break;
+                default:
+                    throw new InvalidOperationException($"字段 {column.Name} 使用了暂不支持的压缩类型 {column.CompressionType}。");
+            }
+        }
+
+        private static void WriteArrayColumnValue(byte[] recordBits, int rowId, Wdc5Column column, Array value)
+        {
+            if (column.IsStringLike)
+            {
+                throw new InvalidOperationException(
+                    $"字段 {column.Name} 是字符串数组列，当前 WDC5 安全 patch 暂不支持修改字符串数组字段。"
+                );
+            }
+
+            switch (column.CompressionType)
+            {
+                case Wdc5CompressionType.None:
+                case Wdc5CompressionType.Immediate:
+                case Wdc5CompressionType.SignedImmediate:
+                    WriteInlineArrayBits(recordBits, rowId, column, value);
+                    break;
+                case Wdc5CompressionType.PalletArray:
+                    WritePalletArrayValue(recordBits, rowId, column, value);
+                    break;
+                default:
+                    throw new InvalidOperationException($"字段 {column.Name} 目前不支持数组安全 patch。");
+            }
+        }
+
+        private static void WriteInlineArrayBits(byte[] recordBits, int rowId, Wdc5Column column, Array value)
+        {
+            if (column.ArrayLength <= 0)
+                throw new InvalidOperationException($"字段 {column.Name} 缺少数组长度信息，无法安全 patch。");
+
+            if (value.Length != column.ArrayLength)
+            {
+                throw new InvalidOperationException(
+                    $"第 {rowId} 行字段 {column.Name} 的数组长度从 {column.ArrayLength} 变成了 {value.Length}，当前安全 patch 不支持改变数组长度。"
+                );
+            }
+
+            if (column.StorageBitSize > 0 && checked(value.Length * column.BitWidth) != column.StorageBitSize)
+            {
+                throw new InvalidOperationException(
+                    $"字段 {column.Name} 的数组布局与 WDC5 存储位宽不匹配。定义长度={value.Length}, BitWidth={column.BitWidth}, StorageBits={column.StorageBitSize}。"
+                );
+            }
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                uint rawValue = ToRawUInt32(value.GetValue(i));
+                WriteBits(recordBits, column.BitOffset + (i * column.BitWidth), column.BitWidth, rawValue);
+            }
+        }
+
+        private static void WritePalletArrayValue(byte[] recordBits, int rowId, Wdc5Column column, Array value)
+        {
+            if (column.Cardinality <= 0)
+                throw new InvalidOperationException($"字段 {column.Name} 缺少 pallet-array cardinality，无法安全 patch。");
+
+            if (value.Length != column.Cardinality)
+            {
+                throw new InvalidOperationException(
+                    $"第 {rowId} 行字段 {column.Name} 的数组长度从 {column.Cardinality} 变成了 {value.Length}，当前安全 patch 不支持改变数组长度。"
+                );
+            }
+
+            uint[] rawValues = new uint[value.Length];
+            for (int i = 0; i < value.Length; i++)
+                rawValues[i] = ToRawUInt32(value.GetValue(i));
+
+            string key = string.Join("|", rawValues);
+            if (!column.PalletArrayIndexByValueKey.TryGetValue(key, out uint palletIndex))
+            {
+                throw new InvalidOperationException(
+                    $"第 {rowId} 行字段 {column.Name} 的数组值 [{string.Join(", ", rawValues)}] 不存在于原始 WDC5 pallet-array 数据中。当前安全 patch 只能写回原文件 palette 中已经存在的数组组合，不能新增 palette 项。"
+                );
+            }
+
+            WriteBits(recordBits, column.BitOffset, column.BitWidth, palletIndex);
+        }
+
+        private static void WriteCommonValue(byte[] fileData, int rowId, Wdc5Column column, uint rawValue)
+        {
+            if (column.CommonValueOffsetById.TryGetValue(rowId, out int valueOffset))
+            {
+                byte[] bytes = BitConverter.GetBytes(rawValue);
+                Buffer.BlockCopy(bytes, 0, fileData, valueOffset, bytes.Length);
+                return;
+            }
+
+            if (rawValue != column.CommonDefaultValue)
+            {
+                throw new InvalidOperationException(
+                    $"第 {rowId} 行字段 {column.Name} 使用 common 压缩，原文件里没有该 ID 的 common 项，无法在不改动文件结构的情况下写入值 {rawValue}。"
+                );
+            }
         }
 
         private static string SafeReplace(string targetFile, byte[] data)
@@ -213,7 +357,7 @@ namespace WDBXEditor2.Controller
                 if (flags != DB2Flags.Index)
                     throw new InvalidDataException($"安全 patch 目前只支持 indexed non-sparse WDC5 文件。Flags: {flags}。");
 
-                if (lookupColumnCount != 1 || commonDataSize != 0 || columnMetaDataSize != fieldsCount * ColumnMetaSize)
+                if (lookupColumnCount != 1 || columnMetaDataSize != fieldsCount * ColumnMetaSize)
                     throw new InvalidDataException("不支持的 WDC5 lookup 或 column metadata 布局。");
 
                 if (sectionsCount <= 0)
@@ -239,7 +383,17 @@ namespace WDBXEditor2.Controller
                 }
 
                 long fieldMetaOffset = stream.Position;
-                stream.Position = fieldMetaOffset + fieldsCount * 4;
+                EnsureAvailable(data, fieldMetaOffset, fieldsCount * FieldMetaSize, "WDC5 field metadata");
+
+                var fieldMetas = new List<Wdc5FieldMeta>(fieldsCount);
+                for (int i = 0; i < fieldsCount; i++)
+                {
+                    fieldMetas.Add(new Wdc5FieldMeta
+                    {
+                        Bits = reader.ReadInt16(),
+                        Offset = reader.ReadInt16()
+                    });
+                }
 
                 var columns = new List<Wdc5Column>();
                 for (int i = 0; i < fieldsCount; i++)
@@ -249,42 +403,110 @@ namespace WDBXEditor2.Controller
                     ushort recordOffset = reader.ReadUInt16();
                     ushort size = reader.ReadUInt16();
                     uint additionalDataSize = reader.ReadUInt32();
-                    uint compressionType = reader.ReadUInt32();
-                    int bitOffset = reader.ReadInt32();
-                    int bitWidth = reader.ReadInt32();
-                    reader.ReadInt32(); // cardinality
+                    uint compressionTypeValue = reader.ReadUInt32();
+                    int dataA = reader.ReadInt32();
+                    int dataB = reader.ReadInt32();
+                    int dataC = reader.ReadInt32();
 
-                    if (compressionType != 3)
-                        throw new InvalidDataException("安全 patch 目前只支持 pallet 压缩的 WDC5 字段。");
-
-                    if (recordOffset != bitOffset || size != bitWidth)
-                        throw new InvalidDataException("不支持的 WDC5 pallet bit 布局。");
-
-                    columns.Add(new Wdc5Column
+                    var compressionType = (Wdc5CompressionType)compressionTypeValue;
+                    var fieldMeta = fieldMetas[i];
+                    var column = new Wdc5Column
                     {
                         Name = string.Empty,
-                        BitOffset = bitOffset,
-                        BitWidth = bitWidth,
-                        AdditionalDataSize = checked((int)additionalDataSize)
-                    });
+                        CompressionType = compressionType,
+                        AdditionalDataSize = checked((int)additionalDataSize),
+                        Cardinality = dataC,
+                        StorageBitSize = size
+                    };
+
+                    switch (compressionType)
+                    {
+                        case Wdc5CompressionType.None:
+                            column.BitOffset = recordOffset;
+                            column.BitWidth = GetNoneBitWidth(fieldMeta, size, dataB);
+                            column.ArrayLength = GetArrayLength(size, column.BitWidth);
+                            break;
+                        case Wdc5CompressionType.Immediate:
+                        case Wdc5CompressionType.SignedImmediate:
+                            column.BitOffset = dataA;
+                            column.BitWidth = dataB;
+                            column.ArrayLength = GetArrayLength(size, column.BitWidth);
+                            break;
+                        case Wdc5CompressionType.Common:
+                            column.CommonDefaultValue = unchecked((uint)dataA);
+                            break;
+                        case Wdc5CompressionType.Pallet:
+                        case Wdc5CompressionType.PalletArray:
+                            column.BitOffset = dataA;
+                            column.BitWidth = dataB;
+                            if (recordOffset != dataA || size != dataB)
+                                throw new InvalidDataException("不支持的 WDC5 pallet bit 布局。");
+                            break;
+                        default:
+                            throw new InvalidDataException($"安全 patch 目前不支持压缩类型 {compressionTypeValue}。");
+                    }
+
+                    if (UsesInlineRecordBits(compressionType) && (column.BitOffset < 0 || column.BitWidth <= 0))
+                        throw new InvalidDataException($"字段 {i} 的 WDC5 位布局无效。");
+
+                    columns.Add(column);
                 }
 
                 foreach (var column in columns)
                 {
-                    int valueCount = column.AdditionalDataSize / 4;
-                    if (column.AdditionalDataSize % 4 != 0)
-                        throw new InvalidDataException("WDC5 pallet 数据大小异常。");
-
-                    EnsureAvailable(data, stream.Position, column.AdditionalDataSize, "WDC5 pallet data");
-
-                    for (uint i = 0; i < valueCount; i++)
+                    switch (column.CompressionType)
                     {
-                        uint value = reader.ReadUInt32();
-                        column.PalletIndexByValue[value] = i;
+                        case Wdc5CompressionType.Pallet:
+                        case Wdc5CompressionType.PalletArray:
+                            int valueCount = column.AdditionalDataSize / 4;
+                            if (column.AdditionalDataSize % 4 != 0)
+                                throw new InvalidDataException("WDC5 pallet 数据大小异常。");
+
+                            EnsureAvailable(data, stream.Position, column.AdditionalDataSize, "WDC5 pallet data");
+
+                            for (uint i = 0; i < valueCount; i++)
+                            {
+                                uint value = reader.ReadUInt32();
+                                column.PalletValues.Add(value);
+                                if (!column.PalletIndexByValue.ContainsKey(value))
+                                    column.PalletIndexByValue[value] = i;
+                            }
+
+                            if (column.CompressionType == Wdc5CompressionType.PalletArray && column.Cardinality > 1)
+                            {
+                                if (valueCount % column.Cardinality != 0)
+                                    throw new InvalidDataException("WDC5 pallet-array 数据大小与 cardinality 不匹配。");
+
+                                for (uint paletteIndex = 0; paletteIndex < valueCount / column.Cardinality; paletteIndex++)
+                                {
+                                    string key = string.Join(
+                                        "|",
+                                        Enumerable.Range(0, column.Cardinality)
+                                            .Select(offset => column.PalletValues[(int)(paletteIndex * column.Cardinality) + offset].ToString())
+                                    );
+                                    column.PalletArrayIndexByValueKey[key] = paletteIndex;
+                                }
+                            }
+                            break;
+                        case Wdc5CompressionType.Common:
+                            if (column.AdditionalDataSize % 8 != 0)
+                                throw new InvalidDataException("WDC5 common 数据大小异常。");
+
+                            EnsureAvailable(data, stream.Position, column.AdditionalDataSize, "WDC5 common data");
+
+                            for (int i = 0; i < column.AdditionalDataSize / 8; i++)
+                            {
+                                int id = reader.ReadInt32();
+                                int valueOffset = checked((int)stream.Position);
+                                uint value = reader.ReadUInt32();
+                                column.CommonValueById[id] = value;
+                                column.CommonValueOffsetById[id] = valueOffset;
+                            }
+                            break;
                     }
                 }
 
-                if (stream.Position != HeaderSize + sectionsCount * SectionHeaderSize + fieldsCount * 4 + columnMetaDataSize + palletDataSize)
+                if (stream.Position != HeaderSize + sectionsCount * SectionHeaderSize + fieldsCount * FieldMetaSize + columnMetaDataSize + palletDataSize + commonDataSize)
                     throw new InvalidDataException("WDC5 metadata 大小异常。");
 
                 var layout = new Wdc5Layout
@@ -308,6 +530,36 @@ namespace WDBXEditor2.Controller
                 return layout;
             }
 
+            private static bool UsesInlineRecordBits(Wdc5CompressionType compressionType)
+            {
+                return compressionType == Wdc5CompressionType.None ||
+                    compressionType == Wdc5CompressionType.Immediate ||
+                    compressionType == Wdc5CompressionType.SignedImmediate ||
+                    compressionType == Wdc5CompressionType.Pallet ||
+                    compressionType == Wdc5CompressionType.PalletArray;
+            }
+
+            private static int GetNoneBitWidth(Wdc5FieldMeta fieldMeta, ushort columnSize, int fallbackBitWidth)
+            {
+                int bitWidth = 32 - fieldMeta.Bits;
+                if (bitWidth <= 0)
+                    bitWidth = fallbackBitWidth;
+                if (bitWidth <= 0)
+                    bitWidth = columnSize;
+                return bitWidth;
+            }
+
+            private static int GetArrayLength(int storageBitSize, int bitWidth)
+            {
+                if (storageBitSize <= 0 || bitWidth <= 0 || storageBitSize == bitWidth)
+                    return 1;
+
+                if (storageBitSize % bitWidth != 0)
+                    return 1;
+
+                return storageBitSize / bitWidth;
+            }
+
             private static void EnsureAvailable(byte[] data, long offset, int size, string description)
             {
                 if (offset < 0 || size < 0 || offset + size > data.Length)
@@ -322,11 +574,23 @@ namespace WDBXEditor2.Controller
                 var recordFields = GetInlineRecordFields(storage).ToList();
                 if (recordFields.Count != Columns.Count)
                     throw new InvalidOperationException(
-                        $"DBD inline 字段数与 WDC5 column 数不匹配。Inline fields: {recordFields.Count}, WDC5 columns: {Columns.Count}, IdFieldIndex: {IdFieldIndex}, Flags: {Flags}。"
+                        $"DBD inline 字段数与 WDC5 column 数不匹配。Inline fields: {recordFields.Count}, WDC5 columns: {Columns.Count}, IdFieldIndex: {IdFieldIndex}, Flags: {Flags}。\n" +
+                        "这通常表示当前加载使用的 definition build 与文件实际 layout 不一致；请尝试在加载时改用更匹配的 definition，或使用“自动选择”重新打开该 DB2。"
                     );
 
                 for (int i = 0; i < Columns.Count; i++)
-                    Columns[i].Name = recordFields[i].Name;
+                {
+                    var field = recordFields[i];
+                    var column = Columns[i];
+                    var semantics = Wdc5FieldSemantics.FromField(field);
+
+                    column.Name = field.Name;
+                    column.IsArray = semantics.IsArray;
+                    column.IsStringLike = semantics.IsStringLike;
+                    column.ArrayLength = semantics.ArrayLength;
+
+                    ValidateColumnSemantics(column);
+                }
             }
 
             private static IEnumerable<FieldInfo> GetInlineRecordFields(IDBCDStorage storage)
@@ -361,6 +625,56 @@ namespace WDBXEditor2.Controller
                 return relation != null && relation.IsNonInline;
             }
 
+            private static void ValidateColumnSemantics(Wdc5Column column)
+            {
+                bool inlineBits = column.CompressionType == Wdc5CompressionType.None ||
+                    column.CompressionType == Wdc5CompressionType.Immediate ||
+                    column.CompressionType == Wdc5CompressionType.SignedImmediate;
+
+                bool layoutLooksArray = inlineBits &&
+                    column.StorageBitSize > 0 &&
+                    column.BitWidth > 0 &&
+                    column.StorageBitSize != column.BitWidth &&
+                    column.StorageBitSize % column.BitWidth == 0;
+
+                if (column.IsArray)
+                {
+                    if (column.ArrayLength <= 0)
+                        throw new InvalidOperationException($"字段 {column.Name} 的数组长度无效。");
+
+                    if (layoutLooksArray)
+                    {
+                        int inferredLength = column.StorageBitSize / column.BitWidth;
+                        if (inferredLength != column.ArrayLength)
+                        {
+                            throw new InvalidOperationException(
+                                $"字段 {column.Name} 的 DBD 数组长度与 WDC5 布局不匹配。DBD={column.ArrayLength}, WDC5={inferredLength}。"
+                            );
+                        }
+                    }
+
+                    if (column.CompressionType == Wdc5CompressionType.PalletArray &&
+                        column.Cardinality > 0 &&
+                        column.Cardinality != column.ArrayLength)
+                    {
+                        throw new InvalidOperationException(
+                            $"字段 {column.Name} 的 DBD 数组长度与 pallet-array cardinality 不匹配。DBD={column.ArrayLength}, WDC5={column.Cardinality}。"
+                        );
+                    }
+
+                    return;
+                }
+
+                if (layoutLooksArray)
+                {
+                    throw new InvalidOperationException(
+                        $"字段 {column.Name} 在 DBD 中是标量，但 WDC5 位布局看起来像数组。当前安全 patch 已停止，避免写坏文件。"
+                    );
+                }
+
+                column.ArrayLength = 1;
+            }
+
             public bool TryGetRecordOffset(int id, out int recordOffset) => editableRecordOffsets.TryGetValue(id, out recordOffset);
 
             private void ReadEditableSection(byte[] data, Wdc5Section section, int totalStringTableSize)
@@ -391,10 +705,61 @@ namespace WDBXEditor2.Controller
         private sealed class Wdc5Column
         {
             public string Name { get; set; }
+            public Wdc5CompressionType CompressionType { get; set; }
             public int BitOffset { get; set; }
             public int BitWidth { get; set; }
+            public int StorageBitSize { get; set; }
+            public int ArrayLength { get; set; }
+            public int Cardinality { get; set; }
             public int AdditionalDataSize { get; set; }
+            public uint CommonDefaultValue { get; set; }
+            public bool IsArray { get; set; }
+            public bool IsStringLike { get; set; }
             public Dictionary<uint, uint> PalletIndexByValue { get; } = new Dictionary<uint, uint>();
+            public List<uint> PalletValues { get; } = new List<uint>();
+            public Dictionary<string, uint> PalletArrayIndexByValueKey { get; } = new Dictionary<string, uint>();
+            public Dictionary<int, uint> CommonValueById { get; } = new Dictionary<int, uint>();
+            public Dictionary<int, int> CommonValueOffsetById { get; } = new Dictionary<int, int>();
+        }
+
+        private sealed class Wdc5FieldSemantics
+        {
+            public bool IsArray { get; private set; }
+            public bool IsStringLike { get; private set; }
+            public int ArrayLength { get; private set; }
+
+            public static Wdc5FieldSemantics FromField(FieldInfo field)
+            {
+                bool isArray = field.FieldType.IsArray;
+                Type elementType = isArray ? field.FieldType.GetElementType() : field.FieldType;
+                int arrayLength = isArray ? field.GetCustomAttribute<CardinalityAttribute>()?.Count ?? 0 : 1;
+
+                if (isArray && arrayLength <= 0)
+                    throw new InvalidOperationException($"字段 {field.Name} 缺少 CardinalityAttribute，无法确定数组长度。");
+
+                return new Wdc5FieldSemantics
+                {
+                    IsArray = isArray,
+                    IsStringLike = elementType == typeof(string),
+                    ArrayLength = arrayLength
+                };
+            }
+        }
+
+        private sealed class Wdc5FieldMeta
+        {
+            public short Bits { get; set; }
+            public short Offset { get; set; }
+        }
+
+        private enum Wdc5CompressionType : uint
+        {
+            None = 0,
+            Immediate = 1,
+            Common = 2,
+            Pallet = 3,
+            PalletArray = 4,
+            SignedImmediate = 5
         }
 
         private sealed class Wdc5Section
@@ -411,7 +776,7 @@ namespace WDBXEditor2.Controller
         }
     }
 
-    internal sealed class Wdc5PatchSaveResult
+    public sealed class Wdc5PatchSaveResult
     {
         public int ChangedRows { get; set; }
         public int EditableRows { get; set; }

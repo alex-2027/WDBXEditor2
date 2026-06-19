@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DBCD\DBCD.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\WDBXEditor2\Controller\Wdc5InPlacePatcher.cs" Link="Controller\Wdc5InPlacePatcher.cs" />
+  </ItemGroup>
+
+</Project>
